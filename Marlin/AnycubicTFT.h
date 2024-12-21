@@ -1,17 +1,17 @@
 /*
  AnycubicTFT.h  --- Support for Anycubic i3 Mega TFT
  Created by Christian Hopp on 09.12.17.
-
+ 
  This library is free software; you can redistribute it and/or
  modify it under the terms of the GNU Lesser General Public
  License as published by the Free Software Foundation; either
  version 2.1 of the License, or (at your option) any later version.
-
+ 
  This library is distributed in the hope that it will be useful,
  but WITHOUT ANY WARRANTY; without even the implied warranty of
  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  Lesser General Public License for more details.
-
+ 
  You should have received a copy of the GNU Lesser General Public
  License along with this library; if not, write to the Free Software
  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
@@ -55,20 +55,7 @@ public:
   void HeatingStart();
   void FilamentRunout();
   void KillTFT();
-  char TFTstate=ANYCUBIC_TFT_STATE_IDLE;
-
-  /**
-  * Anycubic TFT pause states:
-  *
-  * 0 - printing / stopped
-  * 1 - regular pause
-  * 2 - M600 pause
-  * 3 - filament runout pause
-  * 4 - nozzle timeout on M600
-  * 5 - nozzle timeout on filament runout
-  */
-  uint8_t ai3m_pause_state = 0;
-
+  
 private:
   char TFTcmdbuffer[TFTBUFSIZE][TFT_MAX_CMD_SIZE];
   int TFTbuflen=0;
@@ -77,6 +64,7 @@ private:
   char serial3_char;
   int serial3_count = 0;
   char *TFTstrchr_pointer;
+  char TFTstate=ANYCUBIC_TFT_STATE_IDLE;
   char FlagResumFromOutage=0;
   uint16_t filenumber=0;
   unsigned long starttime=0;
@@ -84,8 +72,7 @@ private:
   uint8_t tmp_extruder=0;
   char LastSDstatus=0;
   uint16_t HeaterCheckCount=0;
-  bool IsParked = false;
-
+  
   struct OutageDataStruct {
     char OutageDataVersion;
     char OutageFlag;
@@ -94,10 +81,10 @@ private:
     float last_hotend_temp;
     long lastSDposition;
   } OutageData;
-
+  
   void WriteOutageEEPromData();
   void ReadOutageEEPromData();
-
+  
   float CodeValue();
   bool CodeSeen(char);
   void Ls();
@@ -109,19 +96,14 @@ private:
   void CheckSDCardChange();
   void CheckHeaterError();
   void HandleSpecialMenu();
-  void FilamentChangePause();
-  void FilamentChangeResume();
-  void ReheatNozzle();
-  void ParkAfterStop();
-
+  
   char     SelectedDirectory[30];
   uint8_t  SpecialMenu=false;
 
 #if ENABLED(ANYCUBIC_FILAMENT_RUNOUT_SENSOR)
   char FilamentTestStatus=false;
   char FilamentTestLastStatus=false;
-  bool FilamentSetMillis=true;
-
+  long FilamentRunoutCounter=0;
 #endif
 };
 

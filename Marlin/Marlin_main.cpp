@@ -228,7 +228,6 @@
  * M867 - Enable/disable or toggle error correction for position encoder modules.
  * M868 - Report or set position encoder module error correction threshold.
  * M869 - Report position encoder module error.
- * M888 - Ultrabase cooldown: Let the parts cooling fan hover above the finished print to cool down the bed. EXPERIMENTAL FEATURE!
  * M900 - Get or Set Linear Advance K-factor. (Requires LIN_ADVANCE)
  * M906 - Set or get motor current in milliamps using axis codes X, Y, Z, E. Report values if no axis codes given. (Requires at least one _DRIVER_TYPE defined as TMC2130/TMC2208/TMC2660)
  * M907 - Set digital trimpot motor current using axis codes. (Requires a board with digital trimpots)
@@ -520,9 +519,6 @@ static bool relative_mode; // = false;
 // For M109 and M190, this flag may be cleared (by M108) to exit the wait loop
 volatile bool wait_for_heatup = true;
 
-// Making sure this flag can be cleared by the Anycubic display
-volatile bool nozzle_timed_out = false;
-
 // For M0/M1, this flag may be cleared (by M108) to exit the wait-for-user loop
 #if HAS_RESUME_CONTINUE
   volatile bool wait_for_user; // = false;
@@ -609,7 +605,13 @@ uint8_t target_extruder;
 #endif
 
 #if HAS_POWER_SWITCH
-  bool powersupply_on;
+  bool powersupply_on = (
+    #if ENABLED(PS_DEFAULT_OFF)
+      false
+    #else
+      true
+    #endif
+  );
   #if ENABLED(AUTO_POWER_CONTROL)
     #define PSU_ON()  powerManager.power_on()
     #define PSU_OFF() powerManager.power_off()
@@ -945,9 +947,9 @@ void setup_powerhold() {
   #endif
   #if HAS_POWER_SWITCH
     #if ENABLED(PS_DEFAULT_OFF)
-      powersupply_on = true;  PSU_OFF();
+      PSU_OFF();
     #else
-      powersupply_on = false; PSU_ON();
+      PSU_ON();
     #endif
   #endif
 }
@@ -2079,240 +2081,40 @@ void clean_up_after_endstop_or_probe_move() {
 
   #if ENABLED(BLTOUCH)
 
-    typedef unsigned char BLTCommand;
-    void bltouch_init(const bool set_voltage=false);
-    bool bltouch_last_written_mode; // Initialized by settings.load, 0 = Open Drain; 1 = 5V Drain
-
-    bool bltouch_triggered() {
-      return (
-        #if ENABLED(Z_MIN_PROBE_USES_Z_MIN_ENDSTOP_PIN)
-          READ(Z_MIN_PIN) != Z_MIN_ENDSTOP_INVERTING
-        #else
-          READ(Z_MIN_PROBE_PIN) != Z_MIN_PROBE_ENDSTOP_INVERTING
-        #endif
-      );
-    }
-
-    bool bltouch_command(const BLTCommand cmd, const millis_t &ms) {
-      #if ENABLED(DEBUG_LEVELING_FEATURE)
-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPAIR("BLTouch Command :", cmd);
-      #endif
-      MOVE_SERVO(Z_PROBE_SERVO_NR, cmd);
-      safe_delay(MAX(ms, (uint32_t)BLTOUCH_DELAY)); // BLTOUCH_DELAY is also the *minimum* delay
-      return bltouch_triggered();
-    }
-
-    // Native BLTouch commands ("Underscore"...), used in lcd menus and internally
-    void _bltouch_reset()              { bltouch_command(BLTOUCH_RESET, BLTOUCH_RESET_DELAY); }
-
-    void _bltouch_selftest()           { bltouch_command(BLTOUCH_SELFTEST, BLTOUCH_DELAY); }
-
-    void _bltouch_set_SW_mode()        { bltouch_command(BLTOUCH_SW_MODE, BLTOUCH_DELAY); }
-
-    void _bltouch_set_5V_mode()        { bltouch_command(BLTOUCH_5V_MODE, BLTOUCH_SET5V_DELAY); }
-    void _bltouch_set_OD_mode()        { bltouch_command(BLTOUCH_OD_MODE, BLTOUCH_SETOD_DELAY); }
-    void _bltouch_mode_store()         { bltouch_command(BLTOUCH_MODE_STORE, BLTOUCH_MODE_STORE_DELAY); }
-
-    void _bltouch_deploy()             { bltouch_command(BLTOUCH_DEPLOY, BLTOUCH_DEPLOY_DELAY); }
-    void _bltouch_stow()               { bltouch_command(BLTOUCH_STOW, BLTOUCH_STOW_DELAY); }
-
-    void _bltouch_reset_SW_mode()      { if (bltouch_triggered()) _bltouch_stow(); else _bltouch_deploy(); }
-
-    bool _bltouch_deploy_query_alarm() { return bltouch_command(BLTOUCH_DEPLOY, BLTOUCH_DEPLOY_DELAY); }
-    bool _bltouch_stow_query_alarm()   { return bltouch_command(BLTOUCH_STOW, BLTOUCH_STOW_DELAY); }
-
-    void bltouch_clear() {
-      _bltouch_reset();    // RESET or RESET_SW will clear an alarm condition but...
-                  // ...it will not clear a triggered condition in SW mode when the pin is currently up
-                  // ANTClabs <-- CODE ERROR
-      _bltouch_stow();     // STOW will pull up the pin and clear any triggered condition unless it fails, don't care
-      _bltouch_deploy();   // DEPLOY to test the probe. Could fail, don't care
-      _bltouch_stow();     // STOW to be ready for meaningful work. Could fail, don't care
-    }
-
-    bool bltouch_deploy_proc() {
-      // Do a DEPLOY
-      #if ENABLED(DEBUG_LEVELING_FEATURE)
-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("BLTouch DEPLOY requested");
-      #endif
-
-      // Attempt to DEPLOY, wait for DEPLOY_DELAY or ALARM
-      if (_bltouch_deploy_query_alarm()) {
-        // The deploy might have failed or the probe is already triggered (nozzle too low?)
-        #if ENABLED(DEBUG_LEVELING_FEATURE)
-          if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("BLTouch ALARM or TRIGGER after DEPLOY, recovering");
-        #endif
-
-        bltouch_clear();                               // Get the probe into start condition
-
-        // Last attempt to DEPLOY
-        if (_bltouch_deploy_query_alarm()) {
-          // The deploy might have failed or the probe is actually triggered (nozzle too low?) again
-          #if ENABLED(DEBUG_LEVELING_FEATURE)
-            if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("BLTouch Recovery Failed");
-          #endif
-
-          SERIAL_ECHOLN(MSG_STOP_BLTOUCH);  // Tell the user something is wrong, needs action
-          stop();                              // but it's not too bad, no need to kill, allow restart
-
-          return true;                         // Tell our caller we goofed in case he cares to know
-        }
-      }
-
-      // One of the recommended ANTClabs ways to probe, using SW MODE
-      #if ENABLED(BLTOUCH_FORCE_SW_MODE)
-      _bltouch_set_SW_mode();
-      #endif
-
-      // Now the probe is ready to issue a 10ms pulse when the pin goes up.
-      // The trigger STOW (see motion.cpp for example) will pull up the probes pin as soon as the pulse
-      // is registered.
-      #if ENABLED(DEBUG_LEVELING_FEATURE)
-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("bltouch.deploy_proc() end");
-      #endif
-
-      return false; // report success to caller
-    }
-
-    bool bltouch_stow_proc() {
-      // Do a STOW
-      #if ENABLED(DEBUG_LEVELING_FEATURE)
-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("BLTouch STOW requested");
-      #endif
-
-      // A STOW will clear a triggered condition in the probe (10ms pulse).
-      // At the moment that we come in here, we might (pulse) or will (SW mode) see the trigger on the pin.
-      // So even though we know a STOW will be ignored if an ALARM condition is active, we will STOW.
-      // Note: If the probe is deployed AND in an ALARM condition, this STOW will not pull up the pin
-      // and the ALARM condition will still be there. --> ANTClabs should change this behavior maybe
-
-      // Attempt to STOW, wait for STOW_DELAY or ALARM
-      if (_bltouch_stow_query_alarm()) {
-        // The stow might have failed
-        #if ENABLED(DEBUG_LEVELING_FEATURE)
-          if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("BLTouch ALARM or TRIGGER after STOW, recovering");
-        #endif
-
-        _bltouch_reset();                              // This RESET will then also pull up the pin. If it doesn't
-                                              // work and the pin is still down, there will no longer be
-                                              // an ALARM condition though.
-                                              // But one more STOW will catch that
-        // Last attempt to STOW
-        if (_bltouch_stow_query_alarm()) {             // so if there is now STILL an ALARM condition:
-          #if ENABLED(DEBUG_LEVELING_FEATURE)
-            if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("BLTouch Recovery Failed");
-          #endif
-
-          SERIAL_ECHOLN(MSG_STOP_BLTOUCH);  // Tell the user something is wrong, needs action
-          stop();                              // but it's not too bad, no need to kill, allow restart
-
-          return true;                         // Tell our caller we goofed in case he cares to know
-        }
-      }
-
-      #if ENABLED(DEBUG_LEVELING_FEATURE)
-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("bltouch.stow_proc() end");
-      #endif
-
-      return false; // report success to caller
-    }
-
-    bool bltouch_status_proc() {
-      /**
-       * Return a TRUE for "YES, it is DEPLOYED"
-       * This function will ensure switch state is reset after execution
-       */
-
-      #if ENABLED(DEBUG_LEVELING_FEATURE)
-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPGM("BLTouch STATUS requested");
-      #endif
-
-      _bltouch_set_SW_mode();              // Incidentally, _set_SW_mode() will also RESET any active alarm
-      const bool tr = bltouch_triggered(); // If triggered in SW mode, the pin is up, it is STOWED
-
-      #if ENABLED(DEBUG_LEVELING_FEATURE)
-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPAIR("BLTouch is ", (int)tr);
-      #endif
-
-      if (tr) _bltouch_stow(); else _bltouch_deploy();  // Turn off SW mode, reset any trigger, honor pin state
-      return !tr;
-    }
-
-    void bltouch_mode_conv_proc(const bool M5V) {
-      /**
-       * BLTOUCH pre V3.0 and clones: No reaction at all to this sequence apart from a DEPLOY -> STOW
-       * BLTOUCH V3.0: This will set the mode (twice) and sadly, a STOW is needed at the end, because of the deploy
-       * BLTOUCH V3.1: This will set the mode and store it in the eeprom. The STOW is not needed but does not hurt
-       */
-      #if ENABLED(DEBUG_LEVELING_FEATURE)
-        if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPAIR("BLTouch Set Mode - ", (int)M5V);
-      #endif
-      _bltouch_deploy();
-      if (M5V) _bltouch_set_5V_mode(); else _bltouch_set_OD_mode();
-      _bltouch_mode_store();
-      if (M5V) _bltouch_set_5V_mode(); else _bltouch_set_OD_mode();
-      _bltouch_stow();
-      bltouch_last_written_mode = M5V;
+    void bltouch_command(int angle) {
+      MOVE_SERVO(Z_PROBE_SERVO_NR, angle);  // Give the BL-Touch the command and wait
+      safe_delay(BLTOUCH_DELAY);
     }
 
     bool set_bltouch_deployed(const bool deploy) {
-      if (deploy) _bltouch_deploy(); else _bltouch_stow();
+      if (deploy && TEST_BLTOUCH()) {      // If BL-Touch says it's triggered
+        bltouch_command(BLTOUCH_RESET);    //  try to reset it.
+        bltouch_command(BLTOUCH_DEPLOY);   // Also needs to deploy and stow to
+        bltouch_command(BLTOUCH_STOW);     //  clear the triggered condition.
+        safe_delay(1500);                  // Wait for internal self-test to complete.
+                                           //  (Measured completion time was 0.65 seconds
+                                           //   after reset, deploy, and stow sequence)
+        if (TEST_BLTOUCH()) {              // If it still claims to be triggered...
+          SERIAL_ERROR_START();
+          SERIAL_ERRORLNPGM(MSG_STOP_BLTOUCH);
+          stop();                          // punt!
+          return true;
+        }
+      }
+
+      bltouch_command(deploy ? BLTOUCH_DEPLOY : BLTOUCH_STOW);
+
+      #if ENABLED(DEBUG_LEVELING_FEATURE)
+        if (DEBUGGING(LEVELING)) {
+          SERIAL_ECHOPAIR("set_bltouch_deployed(", deploy);
+          SERIAL_CHAR(')');
+          SERIAL_EOL();
+        }
+      #endif
+
       return false;
     }
 
-    void bltouch_mode_conv_5V()        { bltouch_mode_conv_proc(true); }
-    void bltouch_mode_conv_OD()        { bltouch_mode_conv_proc(false); }
-
-    // DEPLOY and STOW are wrapped for error handling - these are used by homing and by probing
-    bool bltouch_deploy()              { return bltouch_deploy_proc(); }
-    bool bltouch_stow()                { return bltouch_stow_proc(); }
-    bool bltouch_status()              { return bltouch_status_proc(); }
-
-    // Init the class and device. Call from setup().
-    void bltouch_init(const bool set_voltage/*=false*/) {
-      // Voltage Setting (if enabled). At every Marlin initialization:
-      // BLTOUCH < V3.0 and clones: This will be ignored by the probe
-      // BLTOUCH V3.0: SET_5V_MODE or SET_OD_MODE (if enabled).
-      //               OD_MODE is the default on power on, but setting it does not hurt
-      //               This mode will stay active until manual SET_OD_MODE or power cycle
-      // BLTOUCH V3.1: SET_5V_MODE or SET_OD_MODE (if enabled).
-      //               At power on, the probe will default to the eeprom settings configured by the user
-      _bltouch_reset();
-      _bltouch_stow();
-
-      #if ENABLED(BLTOUCH_FORCE_MODE_SET)
-
-        constexpr bool should_set = true;
-
-      #else
-        #if ENABLED(DEBUG_LEVELING_FEATURE)
-          if (DEBUGGING(LEVELING)) {
-            SERIAL_ECHOLNPAIR("last_written_mode - ", int(bltouch_last_written_mode));
-            SERIAL_ECHOLNPGM("config mode - "
-              #if ENABLED(BLTOUCH_SET_5V_MODE)
-                "BLTOUCH_SET_5V_MODE"
-              #else
-                "OD"
-              #endif
-            );
-          }
-        #endif
-
-        const bool should_set = bltouch_last_written_mode != (false
-          #if ENABLED(BLTOUCH_SET_5V_MODE)
-            || true
-          #endif
-        );
-
-      #endif
-
-      if (should_set && set_voltage)
-        bltouch_mode_conv_proc((false
-          #if ENABLED(BLTOUCH_SET_5V_MODE)
-            || true
-          #endif
-        ));
-    }
   #endif // BLTOUCH
 
   /**
@@ -3715,8 +3517,7 @@ inline void gcode_G0_G1(
           const float e = clockwise ^ (r < 0) ? -1 : 1,             // clockwise -1/1, counterclockwise 1/-1
                       dx = p2 - p1, dy = q2 - q1,                   // X and Y differences
                       d = HYPOT(dx, dy),                            // Linear distance between the points
-                      h2 = (r - 0.5f * d) * (r + 0.5f * d),         // factor to reduce rounding error
-                      h = (h2 >= 0) ? SQRT(h2) : 0.0f,              // Distance to the arc pivot-point
+                      h = SQRT(sq(r) - sq(d * 0.5f)),               // Distance to the arc pivot-point
                       mx = (p1 + p2) * 0.5f, my = (q1 + q2) * 0.5f, // Point between the two points
                       sx = -dy / d, sy = dx / d,                    // Slope of the perpendicular bisector
                       cx = mx + e * h * sx, cy = my + e * h * sy;   // Pivot-point of the arc
@@ -4464,7 +4265,7 @@ inline void gcode_G28(const bool always_home_all) {
 
   #if ENABLED(BLTOUCH)
     // Make sure any BLTouch error condition is cleared
-    bltouch_command(BLTOUCH_RESET, BLTOUCH_RESET_DELAY);
+    bltouch_command(BLTOUCH_RESET);
     set_bltouch_deployed(false);
   #endif
 
@@ -5763,12 +5564,7 @@ void home_all_axes() { gcode_G28(true); }
 
           // Unapply the offset because it is going to be immediately applied
           // and cause compensation movement in Z
-          #if ENABLED(ENABLE_LEVELING_FADE_HEIGHT)
-            const float fade_scaling_factor = planner.fade_scaling_factor_for_z(current_position[Z_AXIS]);
-          #else
-            constexpr float fade_scaling_factor = 1.0f;
-          #endif
-          current_position[Z_AXIS] -= fade_scaling_factor * bilinear_z_offset(current_position);
+          current_position[Z_AXIS] -= bilinear_z_offset(current_position);
 
           #if ENABLED(DEBUG_LEVELING_FEATURE)
             if (DEBUGGING(LEVELING)) SERIAL_ECHOLNPAIR(" corrected Z:", current_position[Z_AXIS]);
@@ -7417,7 +7213,7 @@ inline void gcode_M17() {
    * Used by M125 and M600
    */
   static void wait_for_filament_reload(const int8_t max_beep_count=0) {
-    nozzle_timed_out = false;
+    bool nozzle_timed_out = false;
 
     #if ENABLED(ULTIPANEL)
       lcd_advanced_pause_show_message(ADVANCED_PAUSE_MESSAGE_INSERT);
@@ -7450,20 +7246,6 @@ inline void gcode_M17() {
           nozzle_timed_out |= thermalManager.is_heater_idle(e);
 
       if (nozzle_timed_out) {
-
-        #ifdef ANYCUBIC_TFT_MODEL
-          if (AnycubicTFT.ai3m_pause_state < 3) {
-            AnycubicTFT.ai3m_pause_state += 2;
-            #ifdef ANYCUBIC_TFT_DEBUG
-              SERIAL_ECHOPAIR(" DEBUG: NTO - AI3M Pause State set to: ", AnycubicTFT.ai3m_pause_state);
-              SERIAL_EOL();
-            #endif
-          }
-          #ifdef ANYCUBIC_TFT_DEBUG
-            SERIAL_ECHOLNPGM("DEBUG: Nozzle timeout flag set");
-          #endif
-        #endif
-
         #if ENABLED(ULTIPANEL)
           lcd_advanced_pause_show_message(ADVANCED_PAUSE_MESSAGE_CLICK_TO_HEAT_NOZZLE);
         #endif
@@ -7505,15 +7287,6 @@ inline void gcode_M17() {
 
         wait_for_user = true; // Wait for user to load filament
         nozzle_timed_out = false;
-        #ifdef ANYCUBIC_TFT_MODEL
-          if (AnycubicTFT.ai3m_pause_state > 3) {
-            AnycubicTFT.ai3m_pause_state -= 2;
-            #ifdef ANYCUBIC_TFT_DEBUG
-              SERIAL_ECHOPAIR(" DEBUG: NTO - AI3M Pause State set to: ", AnycubicTFT.ai3m_pause_state);
-              SERIAL_EOL();
-            #endif
-          }
-        #endif
 
         #if HAS_BUZZER
           filament_change_beep(max_beep_count, true);
@@ -7547,17 +7320,7 @@ inline void gcode_M17() {
     if (!did_pause_print) return;
 
     // Re-enable the heaters if they timed out
-    nozzle_timed_out = false;
-    #ifdef ANYCUBIC_TFT_MODEL
-      if (AnycubicTFT.ai3m_pause_state > 3) {
-        AnycubicTFT.ai3m_pause_state -= 2;
-        #ifdef ANYCUBIC_TFT_DEBUG
-          SERIAL_ECHOPAIR(" DEBUG: NTO - AI3M Pause State set to: ", AnycubicTFT.ai3m_pause_state);
-          SERIAL_EOL();
-        #endif
-      }
-    #endif
-
+    bool nozzle_timed_out = false;
     HOTEND_LOOP() {
       nozzle_timed_out |= thermalManager.is_heater_idle(e);
       thermalManager.reset_heater_idle_timer(e);
@@ -7643,20 +7406,12 @@ inline void gcode_M17() {
    * M23: Open a file
    */
   inline void gcode_M23() {
-    byte filenameSlash = 0;
     #if ENABLED(POWER_LOSS_RECOVERY)
       card.removeJobRecoveryFile();
     #endif
     // Simplify3D includes the size, so zero out all spaces (#7227)
-    for (char *fn = parser.string_arg; *fn; ++fn){
-      if (*fn == ' ') *fn = '\0';
-      if (*fn == '/') filenameSlash += 1;
-    }
-    if (filenameSlash > 1){
-      card.openFile(&parser.string_arg[1], true);
-    } else {
-      card.openFile(parser.string_arg, true);      
-    }
+    for (char *fn = parser.string_arg; *fn; ++fn) if (*fn == ' ') *fn = '\0';
+    card.openFile(parser.string_arg, true);
   }
 
   /**
@@ -8672,9 +8427,9 @@ inline void gcode_M109() {
     #endif
   }
 
-  #ifdef ANYCUBIC_TFT_MODEL
-    AnycubicTFT.HeatingStart();
-  #endif
+#ifdef ANYCUBIC_TFT_MODEL
+  AnycubicTFT.HeatingStart();
+#endif
 
   #if ENABLED(AUTOTEMP)
     planner.autotemp_M104_M109();
@@ -8753,7 +8508,7 @@ inline void gcode_M109() {
     #ifdef ANYCUBIC_TFT_MODEL
       AnycubicTFT.CommandScan();
     #endif
-
+    
     #if TEMP_RESIDENCY_TIME > 0
 
       const float temp_diff = ABS(target_temp - temp);
@@ -8790,15 +8545,15 @@ inline void gcode_M109() {
   }
 
   #ifdef ANYCUBIC_TFT_MODEL
-    AnycubicTFT.HeatingDone();
+  AnycubicTFT.HeatingDone();
   #endif
-
+  
   #if DISABLED(BUSY_WHILE_HEATING)
     KEEPALIVE_STATE(IN_HANDLER);
   #endif
-
+  
   // flush the serial buffer after heating to prevent lockup by m105
-  //SERIAL_FLUSH();
+  SERIAL_FLUSH();
 
 }
 
@@ -8836,10 +8591,9 @@ inline void gcode_M109() {
     }
     else return;
 
-    #ifdef ANYCUBIC_TFT_MODEL
-      AnycubicTFT.BedHeatingStart();
-    #endif
-
+#ifdef ANYCUBIC_TFT_MODEL
+    AnycubicTFT.BedHeatingStart();
+#endif
     lcd_setstatusPGM(thermalManager.isHeatingBed() ? PSTR(MSG_BED_HEATING) : PSTR(MSG_BED_COOLING));
 
     #if TEMP_BED_RESIDENCY_TIME > 0
@@ -8911,11 +8665,11 @@ inline void gcode_M109() {
           }
         }
       #endif
-
+      
       #ifdef ANYCUBIC_TFT_MODEL
-        AnycubicTFT.CommandScan();
+      AnycubicTFT.CommandScan();
       #endif
-
+      
       #if TEMP_BED_RESIDENCY_TIME > 0
 
         const float temp_diff = ABS(target_temp - temp);
@@ -8943,18 +8697,18 @@ inline void gcode_M109() {
       }
 
     } while (wait_for_heatup && TEMP_BED_CONDITIONS);
-
+    
     #ifdef ANYCUBIC_TFT_MODEL
-      AnycubicTFT.BedHeatingDone();
+    AnycubicTFT.BedHeatingDone();
     #endif
-
+    
     if (wait_for_heatup) lcd_reset_status();
     #if DISABLED(BUSY_WHILE_HEATING)
       KEEPALIVE_STATE(IN_HANDLER);
     #endif
-
-    // flush the serial buffer after heating to prevent lockup by m105
-    //SERIAL_FLUSH();
+    
+     // flush the serial buffer after heating to prevent lockup by m105
+     SERIAL_FLUSH();
   }
 
 #endif // HAS_HEATED_BED
@@ -9150,9 +8904,9 @@ inline void gcode_M111() {
     #if ENABLED(ULTIPANEL)
       lcd_reset_status();
     #endif
-
+    
     #ifdef ANYCUBIC_TFT_MODEL
-      AnycubicTFT.CommandScan();
+    AnycubicTFT.CommandScan();
     #endif
   }
 
@@ -9186,9 +8940,9 @@ inline void gcode_M81() {
   #if ENABLED(ULTIPANEL)
     LCD_MESSAGEPGM(MACHINE_NAME " " MSG_OFF ".");
   #endif
-
+  
   #ifdef ANYCUBIC_TFT_MODEL
-    AnycubicTFT.CommandScan();
+  AnycubicTFT.CommandScan();
   #endif
 }
 
@@ -10361,7 +10115,7 @@ inline void gcode_M226() {
         NOLESS(thermalManager.lpq_len, 0);
       #endif
 
-      thermalManager.update_pid();
+      thermalManager.updatePID();
       SERIAL_ECHO_START();
       #if ENABLED(PID_PARAMS_PER_HOTEND)
         SERIAL_ECHOPAIR(" e:", e); // specify extruder in serial output
@@ -10507,7 +10261,7 @@ inline void gcode_M303() {
       KEEPALIVE_STATE(NOT_BUSY);
     #endif
 
-    thermalManager.pid_autotune(temp, e, c, u);
+    thermalManager.PID_autotune(temp, e, c, u);
 
     #if DISABLED(BUSY_WHILE_HEATING)
       KEEPALIVE_STATE(IN_HANDLER);
@@ -11238,28 +10992,6 @@ inline void gcode_M502() {
    *  Default values are used for omitted arguments.
    */
   inline void gcode_M600() {
-    #ifdef ANYCUBIC_TFT_MODEL
-      #ifdef SDSUPPORT
-        if (card.sdprinting) { // are we printing from sd?
-          if (AnycubicTFT.ai3m_pause_state < 2) {
-            AnycubicTFT.ai3m_pause_state = 2;
-            #ifdef ANYCUBIC_TFT_DEBUG
-              SERIAL_ECHOPAIR(" DEBUG: M600 - AI3M Pause State set to: ", AnycubicTFT.ai3m_pause_state);
-              SERIAL_EOL();
-            #endif
-          }
-          #ifdef ANYCUBIC_TFT_DEBUG
-              SERIAL_ECHOLNPGM("DEBUG: Enter M600 TFTstate routine");
-          #endif
-          AnycubicTFT.TFTstate=ANYCUBIC_TFT_STATE_SDPAUSE_REQ; // enter correct display state to show resume button
-          #ifdef ANYCUBIC_TFT_DEBUG
-              SERIAL_ECHOLNPGM("DEBUG: Set TFTstate to SDPAUSE_REQ");
-          #endif
-          // set flag to ensure correct resume routine gets executed
-        }
-      #endif
-    #endif
-
     point_t park_point = NOZZLE_PARK_POINT;
 
     if (get_target_extruder_from_command(600)) return;
@@ -11631,56 +11363,6 @@ inline void gcode_M502() {
     }
   }
 #endif // MAX7219_GCODE
-
-  /**
-   * M888: Cooldown routine for the Anycubic Ultrabase (EXPERIMENTAL):
-   *       This is meant to be placed at the end Gcode of your slicer.
-   *       It hovers over the print bed and does circular movements while
-   *       running the fan. Works best with custom fan ducts.
-   *
-   *  T<int>   Target bed temperature (min 15°C), 30°C if not specified
-   *  S<int>   Fan speed between 0 and 255, full speed if not specified
-   */
-  inline void gcode_M888() {
-    // don't do this if the machine is not homed
-    if (axis_unhomed_error()) return;
-
-    const float cooldown_arc[2] = { 50, 50 };
-    const uint8_t cooldown_target = MAX((parser.ushortval('T', 30)), 15);
-
-    // set hotbed temperate to zero
-    thermalManager.setTargetBed(0);
-    SERIAL_PROTOCOLLNPGM("Ultrabase cooldown started");
-
-    // set fan to speed <S>, if undefined blast at full speed
-    uint8_t cooldown_fanspeed = parser.ushortval('S', 255);
-    fanSpeeds[0] = MIN(cooldown_fanspeed, 255U);
-
-    // raise z by 2mm and move to X50, Y50
-    do_blocking_move_to_z(MIN(current_position[Z_AXIS] + 2, Z_MAX_POS), 5);
-    do_blocking_move_to_xy(50, 50, 100);
-
-    while ((thermalManager.degBed() > cooldown_target)) {
-      // queue arc movement
-      gcode_get_destination();
-      plan_arc(destination, cooldown_arc, true);
-      SERIAL_PROTOCOLLNPGM("Target not reached, queued an arc");
-
-      // delay while arc is in progress
-      while (planner.movesplanned()) {
-        idle();
-      }
-    idle();
-    }
-    // the bed should be under <T> now
-    fanSpeeds[0]=0;
-    do_blocking_move_to_xy(MAX(X_MIN_POS, 10), MIN(Y_MAX_POS, 190), 100);
-    BUZZ(100, 659);
-    BUZZ(150, 1318);
-    enqueue_and_echo_commands_P(PSTR("M84"));
-    SERIAL_PROTOCOLLNPGM("M888 cooldown routine done");
-  }
-
 
 #if ENABLED(LIN_ADVANCE)
   /**
@@ -13417,8 +13099,6 @@ void process_parsed_command() {
         case 869: gcode_M869(); break;                            // M869: Report axis error
       #endif
 
-      case 888: gcode_M888(); break;                              // M888: Ultrabase cooldown (EXPERIMENTAL)
-
       #if ENABLED(LIN_ADVANCE)
         case 900: gcode_M900(); break;                            // M900: Set Linear Advance K factor
       #endif
@@ -14968,7 +14648,7 @@ void prepare_move_to_destination() {
 
 #if ENABLED(TEMP_STAT_LEDS)
 
-  static uint8_t red_led = -1;  // Invalid value to force leds initializzation on startup
+  static bool red_led = false;
   static millis_t next_status_led_update_ms = 0;
 
   void handle_status_leds(void) {
@@ -14976,18 +14656,20 @@ void prepare_move_to_destination() {
       next_status_led_update_ms += 500; // Update every 0.5s
       float max_temp = 0.0;
       #if HAS_HEATED_BED
-        max_temp = MAX(thermalManager.degTargetBed(), thermalManager.degBed());
+        max_temp = MAX3(max_temp, thermalManager.degTargetBed(), thermalManager.degBed());
       #endif
       HOTEND_LOOP()
         max_temp = MAX3(max_temp, thermalManager.degHotend(e), thermalManager.degTargetHotend(e));
-      const uint8_t new_led = (max_temp > 55.0) ? HIGH : (max_temp < 54.0 || red_led == -1) ? LOW : red_led;
+      const bool new_led = (max_temp > 55.0) ? true : (max_temp < 54.0) ? false : red_led;
       if (new_led != red_led) {
         red_led = new_led;
         #if PIN_EXISTS(STAT_LED_RED)
-          WRITE(STAT_LED_RED_PIN, new_led);
-        #endif
-        #if PIN_EXISTS(STAT_LED_BLUE)
-          WRITE(STAT_LED_BLUE_PIN, !new_led);
+          WRITE(STAT_LED_RED_PIN, new_led ? HIGH : LOW);
+          #if PIN_EXISTS(STAT_LED_BLUE)
+            WRITE(STAT_LED_BLUE_PIN, new_led ? LOW : HIGH);
+          #endif
+        #else
+          WRITE(STAT_LED_BLUE_PIN, new_led ? HIGH : LOW);
         #endif
       }
     }
@@ -15041,25 +14723,6 @@ void disable_all_steppers() {
   disable_e_steppers();
 }
 
-#ifdef ENDSTOP_BEEP
-  void EndstopBeep() {
-    static char last_status=((READ(X_MIN_PIN)<<2)|(READ(Y_MIN_PIN)<<1)|READ(X_MAX_PIN));
-    static unsigned char now_status;
-
-    now_status=((READ(X_MIN_PIN)<<2)|(READ(Y_MIN_PIN)<<1)|READ(X_MAX_PIN))&0xff;
-
-    if(now_status<last_status) {
-      static millis_t endstop_ms = millis() + 300UL;
-      if (ELAPSED(millis(), endstop_ms)) {
-        buzzer.tone(60, 2000);
-      }
-    last_status=now_status;
-    } else if(now_status!=last_status) {
-      last_status=now_status;
-    }
-  }
-#endif
-
 /**
  * Manage several activities:
  *  - Check for Filament Runout
@@ -15077,9 +14740,9 @@ void manage_inactivity(const bool ignore_stepper_queue/*=false*/) {
   #if ENABLED(FILAMENT_RUNOUT_SENSOR)
     runout.run();
   #endif
-
+  
   #if ENABLED(ANYCUBIC_TFT_MODEL) && ENABLED(ANYCUBIC_FILAMENT_RUNOUT_SENSOR)
-    AnycubicTFT.FilamentRunout();
+  AnycubicTFT.FilamentRunout();
   #endif
 
   if (commands_in_queue < BUFSIZE) get_available_commands();
@@ -15285,11 +14948,7 @@ void idle(
 #ifdef ANYCUBIC_TFT_MODEL
   AnycubicTFT.CommandScan();
 #endif
-
-#ifdef ENDSTOP_BEEP
-  EndstopBeep();
-#endif
-
+  
   lcd_update();
 
   host_keepalive();
@@ -15346,7 +15005,7 @@ void kill(const char* lcd_msg) {
   #else
     UNUSED(lcd_msg);
   #endif
-
+  
   #ifdef ANYCUBIC_TFT_MODEL
     // Kill AnycubicTFT
     AnycubicTFT.KillTFT();
@@ -15395,6 +15054,7 @@ void stop() {
   }
 }
 
+
 /**
  * Marlin entry-point: Set up before the program loop
  *  - Set up the kill pin, filament runout, power hold
@@ -15440,7 +15100,7 @@ void setup() {
   MYSERIAL0.begin(BAUDRATE);
   SERIAL_PROTOCOLLNPGM("start");
   SERIAL_ECHO_START();
-
+  
   #ifdef ANYCUBIC_TFT_MODEL
     // Setup AnycubicTFT
     AnycubicTFT.Setup();
@@ -15466,9 +15126,6 @@ void setup() {
   SERIAL_ECHOPGM(MSG_MARLIN);
   SERIAL_CHAR(' ');
   SERIAL_ECHOLNPGM(SHORT_BUILD_VERSION);
-  SERIAL_ECHOPGM(MSG_MARLIN_AI3M);
-  SERIAL_CHAR(' ');
-  SERIAL_ECHOLNPGM(CUSTOM_BUILD_VERSION);
   SERIAL_EOL();
 
   #if defined(STRING_DISTRIBUTION_DATE) && defined(STRING_CONFIG_H_AUTHOR)
@@ -15618,7 +15275,7 @@ void setup() {
 
   #if ENABLED(BLTOUCH)
     // Make sure any BLTouch error condition is cleared
-    bltouch_command(BLTOUCH_RESET, BLTOUCH_RESET_DELAY);
+    bltouch_command(BLTOUCH_RESET);
     set_bltouch_deployed(false);
   #endif
 
@@ -15664,10 +15321,11 @@ void setup() {
     enable_D();
   #endif
 
-  #if ENABLED(SDSUPPORT) && !(ENABLED(ULTRA_LCD) && PIN_EXISTS(SD_DETECT))
+  #if ENABLED(SDSUPPORT) && DISABLED(ULTRA_LCD)
     card.beginautostart();
   #endif
 }
+
 
 /**
  * The main Marlin program loop

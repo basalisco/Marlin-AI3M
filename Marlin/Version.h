@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Marlin 3D Printer Firmware
  * Copyright (C) 2016 MarlinFirmware [https://github.com/MarlinFirmware/Marlin]
  *
@@ -35,13 +35,7 @@
   /**
    * Marlin release version identifier
    */
-  #define SHORT_BUILD_VERSION "1.1.9.1"
-
-  /**
-   * Defines the version of the Marlin-AI3M build. Not to be confused with
-   * Marlin's own build number, e.g. 1.1.9.
-   */
-  #define CUSTOM_BUILD_VERSION "v1.4.7"
+  #define SHORT_BUILD_VERSION "1.1.9"
 
   /**
    * Verbose version identifier which should contain a reference to the location
@@ -54,7 +48,7 @@
    * here we define this default string as the date where the latest release
    * version was tagged.
    */
-  #define STRING_DISTRIBUTION_DATE "2020-11-01"
+  #define STRING_DISTRIBUTION_DATE "2019-02-11"
 
   /**
    * Required minimum Configuration.h and Configuration_adv.h file versions.
@@ -84,7 +78,7 @@
    * has a distinct Github fork— the Source Code URL should just be the main
    * Marlin repository.
    */
-  #define SOURCE_CODE_URL "https://github.com/davidramiro/Marlin-AI3M"
+  #define SOURCE_CODE_URL "https://github.com/MarlinFirmware/Marlin"
 
   /**
    * Default generic printer UUID.

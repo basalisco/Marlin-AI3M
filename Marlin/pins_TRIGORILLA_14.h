@@ -95,46 +95,25 @@
 #define TEMP_BED_PIN       14
 
 // Servos
-#if TRIGORILLA_VERSION == 0 // Default Trigorilla
-  #ifdef NUM_SERVOS
-  	#define SERVO0_PIN      11
+#ifdef NUM_SERVOS
+	#define SERVO0_PIN      11
 
-  	#if NUM_SERVOS > 1
-  		#define SERVO1_PIN    6
-  	#endif
+	#if NUM_SERVOS > 1
+		#define SERVO1_PIN    6
+	#endif
 
-  	#if NUM_SERVOS > 2
-  		#define SERVO2_PIN    5
-  	#endif
+	#if NUM_SERVOS > 2
+		#define SERVO2_PIN    5
+	#endif
 
-  	#if NUM_SERVOS > 3
-  		#define SERVO3_PIN    4
-  	#endif
-  #endif
-#else // Trigorilla 1.1
-  #ifdef NUM_SERVOS
-    #define SERVO0_PIN 5
+	#if NUM_SERVOS > 3
+		#define SERVO3_PIN    4
+	#endif
+#endif
 
-    #if NUM_SERVOS > 1
-      #define SERVO1_PIN 4
-    #endif
-
-    #if NUM_SERVOS > 2
-      #define SERVO2_PIN 11
-    #endif
-
-    #if NUM_SERVOS > 3
-      #define SERVO3_PIN 6
-    #endif
-  #endif
-#endif // #if TRIGORILLA_VERSION
-
-#if defined(ANYCUBIC_TFT_MODEL) || defined(REPRAP_DISCOUNT_SMART_CONTROLLER)
+#if defined(ANYCUBIC_TFT_MODEL)
   #define BEEPER_PIN       31
   #define SD_DETECT_PIN    49
-#else
-  #define BEEPER_PIN       31
-  #define SD_DETECT_PIN    -1
 #endif
 
 // LCD
@@ -154,11 +133,13 @@
 		#define LCD_PINS_D7 29
 
 		#ifdef REPRAP_DISCOUNT_SMART_CONTROLLER
+			#define BEEPER_PIN 37
 
 			#define BTN_EN1 31
 			#define BTN_EN2 33
 			#define BTN_ENC 35
 
+			#define SD_DETECT_PIN 49
 			#elif defined(LCD_I2C_PANELOLU2)
 				#define BTN_EN1 47  //reverse if the encoder turns the wrong way.
 				#define BTN_EN2 43
